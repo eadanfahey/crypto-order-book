@@ -13,3 +13,10 @@ Note: rather than storing price levels as strings or decimals, it stores prices 
 quantities as scaled `u64`s for performance reasons. See `src/binance_api.rs` for the
 scaling factors. For example, for the `BTCUSDT` trading pair, the order book stores the
 prices in units of cents (scaling factor 2) and quantities in satoshis (scaling factor 8).
+
+See `src/main.rs` for example of how the order book is used, including connecting to the
+Binance API. To run it, clone the repo and execute:
+
+```
+cargo run --release
+```
