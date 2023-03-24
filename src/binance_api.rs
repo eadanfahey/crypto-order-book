@@ -1,26 +1,30 @@
-use std::str::from_utf8;
-use std::time::{Instant, Duration};
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Deserializer};
+use std::str::from_utf8;
+use std::time::{Duration, Instant};
+use tokio::{
+    select,
+    sync::mpsc::{UnboundedReceiver, UnboundedSender},
+    task::JoinHandle,
+};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use url::Url;
-use futures_util::{StreamExt, SinkExt};
-use tokio::{sync::{mpsc::{UnboundedSender, UnboundedReceiver}}, task::JoinHandle, select};
 
 use crate::errors::Error;
 
 const BASE_API_ENDPOINT: &'static str = "https://api.binance.com/api/v3";
-const BASE_STREAM_ENDPOINT: &'static str ="wss://stream.binance.com:9443/ws";
+const BASE_STREAM_ENDPOINT: &'static str = "wss://stream.binance.com:9443/ws";
 
 fn create_api_url(endpoint: &'static str) -> Url {
     return Url::parse(&(BASE_API_ENDPOINT.to_owned() + endpoint)).unwrap();
 }
 
-fn create_stream_url(endpoint: & str) -> Url {
+fn create_stream_url(endpoint: &str) -> Url {
     return Url::parse(&(BASE_STREAM_ENDPOINT.to_owned() + endpoint)).unwrap();
 }
 
 pub enum Symbol {
-    BtcUsdt
+    BtcUsdt,
 }
 
 struct SymbolScales {
@@ -31,38 +35,48 @@ struct SymbolScales {
 impl Symbol {
     fn api_string(&self) -> &'static str {
         match self {
-            Self::BtcUsdt => "BTCUSDT"
+            Self::BtcUsdt => "BTCUSDT",
         }
     }
 
     fn stream_string(&self) -> &'static str {
         match self {
-            Self::BtcUsdt => "btcusdt"
+            Self::BtcUsdt => "btcusdt",
         }
     }
 
     fn scales(&self) -> SymbolScales {
         match self {
-            Self::BtcUsdt => SymbolScales { price: 2, quantity: 8 }
+            Self::BtcUsdt => SymbolScales {
+                price: 2,
+                quantity: 8,
+            },
         }
     }
 }
 
 #[allow(dead_code)]
 fn array_of_price_levels<'de, D>(deserializer: D) -> Result<Vec<PriceLevel>, D::Error>
-where D: Deserializer<'de> {
+where
+    D: Deserializer<'de>,
+{
     let s: Vec<[String; 2]> = Deserialize::deserialize(deserializer)?;
-    let res = s.iter().map(|arr| {
-        let price = parse_scaled_number(&arr[0], 2);
-        let quantity = parse_scaled_number(&arr[1], 8);
-        PriceLevel{ price, quantity }
-    }).collect();
+    let res = s
+        .iter()
+        .map(|arr| {
+            let price = parse_scaled_number(&arr[0], 2);
+            let quantity = parse_scaled_number(&arr[1], 8);
+            PriceLevel { price, quantity }
+        })
+        .collect();
     Ok(res)
 }
 
 #[allow(dead_code)]
 async fn get_request<T>(url: Url) -> Result<T, Error>
-where T: serde::de::DeserializeOwned {
+where
+    T: serde::de::DeserializeOwned,
+{
     let path = url.path().to_owned();
     let resp = reqwest::get(url).await?;
     let status = resp.status();
@@ -70,9 +84,7 @@ where T: serde::de::DeserializeOwned {
         return Err(Error::ApiBadStatus(status.as_u16() as u32, path));
     }
 
-    resp.json::<T>()
-        .await
-        .map_err(Error::ApiRequestError)
+    resp.json::<T>().await.map_err(Error::ApiRequestError)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -81,14 +93,12 @@ pub struct PriceLevel {
     pub quantity: u64,
 }
 
-
 #[derive(Debug, PartialEq)]
 pub struct OrderBook {
     pub last_update_id: u64,
     pub bids: Vec<PriceLevel>,
     pub asks: Vec<PriceLevel>,
 }
-
 
 /// Get a snapshot of the orderbook for a trading pair up to a given depth. The maximum
 /// depth that Binance returns is 5000.
@@ -111,7 +121,6 @@ pub async fn get_order_book_snapshot(symbol: Symbol, depth: u32) -> Result<Order
     parse_order_book(&data, &scales)
 }
 
-
 #[derive(Debug, PartialEq)]
 pub struct OrderBookDiff {
     pub event_time: u64,
@@ -126,13 +135,13 @@ pub struct OrderBookDiff {
 /// data streams. Each order book diff and the duration to parse its message will be
 /// sent to the provided `channel`. Once connected to the stream, this function spawns
 /// a background task to send the diffs. The task listens to the `shutdown_recv` channel
-/// to be notified when it should close the stream. 
+/// to be notified when it should close the stream.
 pub async fn start_stream_order_book_diffs(
     symbol: Symbol,
     channel: UnboundedSender<(OrderBookDiff, Duration)>,
-    mut shutdown_recv: UnboundedReceiver<()>
+    mut shutdown_recv: UnboundedReceiver<()>,
 ) -> JoinHandle<Result<(), Error>> {
-    let url = create_stream_url(&format!("/{}@depth", symbol.stream_string()));
+    let url = create_stream_url(&format!("/{}@depth@100ms", symbol.stream_string()));
 
     let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
 
@@ -181,7 +190,7 @@ struct ByteSliceIterator<'a> {
 
 impl<'a> ByteSliceIterator<'a> {
     fn new(data: &'a [u8]) -> Self {
-        ByteSliceIterator{ data, pos: 0 }
+        ByteSliceIterator { data, pos: 0 }
     }
 
     fn is_empty(&self) -> bool {
@@ -196,15 +205,21 @@ impl<'a> ByteSliceIterator<'a> {
 
     fn expect_byte(&mut self, byte: u8) -> Result<u8, Error> {
         if self.pos >= self.data.len() {
-            let msg = format!("expected '{}' at position {} but found EOF", byte as char, self.pos);
+            let msg = format!(
+                "expected '{}' at position {} but found EOF",
+                byte as char, self.pos
+            );
             return Err(Error::ParseError(msg));
-        } 
+        }
         let b = self.data[self.pos];
         if b == byte {
             self.pos += 1;
             return Ok(b);
         }
-        let msg = format!("expected '{}' at position {} but found '{}'", byte as char, self.pos, b as char);
+        let msg = format!(
+            "expected '{}' at position {} but found '{}'",
+            byte as char, self.pos, b as char
+        );
         return Err(Error::ParseError(msg));
     }
 
@@ -226,15 +241,14 @@ impl<'a> ByteSliceIterator<'a> {
                 break;
             }
         }
-        let slice = &self.data[start..start+len];
-        self.pos +=len;
+        let slice = &self.data[start..start + len];
+        self.pos += len;
         return slice;
     }
-
 }
 
 /// Parses a decimal number represented as a string to a scaled `u64`.
-/// Example: parse_scaled_number("24765.230000", 2) -> 2476523. 
+/// Example: parse_scaled_number("24765.230000", 2) -> 2476523.
 fn parse_scaled_number(s: &str, scale: u32) -> u64 {
     let dot_idx = s.find('.');
     if let Some(i) = dot_idx {
@@ -261,9 +275,19 @@ fn parse_scaled_number(s: &str, scale: u32) -> u64 {
     }
 }
 
-fn parse_price_levels(bytes: &mut ByteSliceIterator, scales: &SymbolScales) -> Result<Vec<PriceLevel>, Error> {
-    let mut levels: Vec<PriceLevel> = Vec::new();
+fn parse_price_levels(
+    bytes: &mut ByteSliceIterator,
+    scales: &SymbolScales,
+) -> Result<Vec<PriceLevel>, Error> {
     bytes.expect_byte(b'[')?;
+
+    // Check if the array is empty
+    if bytes.peek_byte() == b']' {
+        bytes.consume_byte();
+        return Ok(vec![]);
+    }
+
+    let mut levels: Vec<PriceLevel> = Vec::new();
     loop {
         bytes.expect_byte(b'[')?;
 
@@ -315,7 +339,10 @@ fn parse_single_byte_object_key(bytes: &mut ByteSliceIterator, key: u8) -> Resul
 
 /// Handcoded parser for the Binance order book diff stream messages.
 /// See: https://binance-docs.github.io/apidocs/spot/en/#partial-book-depth-streams
-fn parse_diff_depth_stream_event(data: &[u8], scales: &SymbolScales) -> Result<OrderBookDiff, Error> {
+fn parse_diff_depth_stream_event(
+    data: &[u8],
+    scales: &SymbolScales,
+) -> Result<OrderBookDiff, Error> {
     let mut bytes = ByteSliceIterator::new(data);
 
     // Opening curly bracket
@@ -385,7 +412,7 @@ fn parse_diff_depth_stream_event(data: &[u8], scales: &SymbolScales) -> Result<O
         return Err(Error::ParseError("expected EOF".to_string()));
     }
 
-    Ok(OrderBookDiff{
+    Ok(OrderBookDiff {
         event_time,
         symbol: symbol.to_string(),
         first_update_id,
@@ -408,7 +435,10 @@ fn parse_order_book(data: &[u8], scales: &SymbolScales) -> Result<OrderBook, Err
     bytes.expect_byte(b':')?;
 
     // lastUpdateId value
-    let last_update_id = from_utf8(bytes.consume_until_byte(b',')).unwrap().parse::<u64>().unwrap();
+    let last_update_id = from_utf8(bytes.consume_until_byte(b','))
+        .unwrap()
+        .parse::<u64>()
+        .unwrap();
     bytes.expect_byte(b',')?;
 
     // bids key
@@ -445,14 +475,18 @@ fn parse_order_book(data: &[u8], scales: &SymbolScales) -> Result<OrderBook, Err
         return Err(Error::ParseError("expected EOF".to_string()));
     }
 
-    Ok(OrderBook { last_update_id, bids, asks })
+    Ok(OrderBook {
+        last_update_id,
+        bids,
+        asks,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use crate::binance_api::{parse_scaled_number, SymbolScales};
 
-    use super::{parse_diff_depth_stream_event, PriceLevel, OrderBookDiff, parse_order_book};
+    use super::{parse_diff_depth_stream_event, parse_order_book, OrderBookDiff, PriceLevel};
 
     #[test]
     fn test_parser() {
@@ -467,7 +501,10 @@ mod tests {
         // }
 
         let data = r#"{"e":"depthUpdate","E":1679024268761,"s":"BTCUSDT","U":35286408260,"u":35286409112,"b":[["25700.51000000","0.00000000"],["25700.12000000","0.10277000"],["25700.11000000","0.00000000"],["25700.08000000","0.00403000"],["25700.04000000","0.00430000"]],"a":[["25701.43000000","0.00000000"],["25701.44000000","0.00203000"],["25701.47000000","0.00064000"],["25701.50000000","0.00000000"]]}"#;
-        let scales = SymbolScales{ price: 2, quantity: 8};
+        let scales = SymbolScales {
+            price: 2,
+            quantity: 8,
+        };
         let diff = parse_diff_depth_stream_event(data.as_bytes(), &scales).unwrap();
         let expected_diff = OrderBookDiff {
             event_time: 1679024268761,
@@ -475,18 +512,83 @@ mod tests {
             first_update_id: 35286408260,
             final_update_id: 35286409112,
             bids: vec![
-                PriceLevel{ price: 2570051, quantity: 00000000 },
-                PriceLevel{ price: 2570012, quantity: 10277000 },
-                PriceLevel{ price: 2570011, quantity: 00000000 },
-                PriceLevel{ price: 2570008, quantity: 00403000 },
-                PriceLevel{ price: 2570004, quantity: 00430000 },
+                PriceLevel {
+                    price: 2570051,
+                    quantity: 00000000,
+                },
+                PriceLevel {
+                    price: 2570012,
+                    quantity: 10277000,
+                },
+                PriceLevel {
+                    price: 2570011,
+                    quantity: 00000000,
+                },
+                PriceLevel {
+                    price: 2570008,
+                    quantity: 00403000,
+                },
+                PriceLevel {
+                    price: 2570004,
+                    quantity: 00430000,
+                },
             ],
             asks: vec![
-                PriceLevel{ price: 2570143, quantity: 00000000 },
-                PriceLevel{ price: 2570144, quantity: 00203000 },
-                PriceLevel{ price: 2570147, quantity: 00064000 },
-                PriceLevel{ price: 2570150, quantity: 00000000 },
+                PriceLevel {
+                    price: 2570143,
+                    quantity: 00000000,
+                },
+                PriceLevel {
+                    price: 2570144,
+                    quantity: 00203000,
+                },
+                PriceLevel {
+                    price: 2570147,
+                    quantity: 00064000,
+                },
+                PriceLevel {
+                    price: 2570150,
+                    quantity: 00000000,
+                },
             ],
+        };
+        assert_eq!(&diff, &expected_diff);
+    }
+
+    #[test]
+    fn test_parse_diff_depth_empty() {
+        // let data =
+        // {
+        //   "e":"depthUpdate",
+        //   "E":1679634678423,
+        //   "s":"BTCUSDT",
+        //   "U":35843600705,
+        //   "u":35843600709,
+        //   "b":[["28174.25000000","8.62292000"],["28128.00000000","0.67862000"]],
+        //   "a":[]
+        // }"
+        let data = r#"{"e":"depthUpdate","E":1679634678423,"s":"BTCUSDT","U":35843600705,"u":35843600709,"b":[["28174.25000000","8.62292000"],["28128.00000000","0.67862000"]],"a":[]}"#;
+        let scales = SymbolScales {
+            price: 2,
+            quantity: 8,
+        };
+        let diff = parse_diff_depth_stream_event(data.as_bytes(), &scales).unwrap();
+        let expected_diff = OrderBookDiff {
+            event_time: 1679634678423,
+            symbol: "BTCUSDT".to_owned(),
+            first_update_id: 35843600705,
+            final_update_id: 35843600709,
+            bids: vec![
+                PriceLevel {
+                    price: 2817425,
+                    quantity: 862292000,
+                },
+                PriceLevel {
+                    price: 2812800,
+                    quantity: 67862000,
+                },
+            ],
+            asks: vec![],
         };
         assert_eq!(&diff, &expected_diff);
     }
@@ -499,7 +601,10 @@ mod tests {
         //    "asks":[["26460.33000000","0.00864000"],["26460.74000000","0.00070000"]]
         // }
         let data = r#"{"lastUpdateId":35357397801,"bids":[["26458.89000000","0.19892000"],["26458.86000000","0.97602000"]],"asks":[["26460.33000000","0.00864000"],["26460.74000000","0.00070000"]]}"#;
-        let scales = SymbolScales{ price: 2, quantity: 8};
+        let scales = SymbolScales {
+            price: 2,
+            quantity: 8,
+        };
         parse_order_book(data.as_bytes(), &scales).unwrap();
     }
 

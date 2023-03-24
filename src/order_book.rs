@@ -1,6 +1,5 @@
+use crate::binance_api::{self, PriceLevel};
 use std::collections::BTreeMap;
-use crate::binance_api::{PriceLevel, self};
-
 
 /// Order book datastructure backed by a `BTreeMap`.
 pub struct OrderBook {
@@ -21,7 +20,12 @@ impl OrderBook {
         for level in init.bids.iter() {
             bids.insert(level.price, level.quantity);
         }
-        OrderBook{ last_update_id: init.last_update_id, asks, bids, first_diff_processed: false }
+        OrderBook {
+            last_update_id: init.last_update_id,
+            asks,
+            bids,
+            first_diff_processed: false,
+        }
     }
 
     fn apply_diff_to(side: &mut BTreeMap<u64, u64>, levels: &[PriceLevel]) -> u64 {

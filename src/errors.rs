@@ -1,4 +1,3 @@
-
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("API request error")]
@@ -13,4 +12,3 @@ pub enum Error {
     #[error("stream error")]
     StreamError(#[from] tokio_tungstenite::tungstenite::Error),
 }
-
