@@ -109,6 +109,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "btree-slab"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cbd15ebdf1711bae315f668ac8865d35754613955f6473515b6aa2762ea2ec86"
+dependencies = [
+ "cc-traits",
+ "slab",
+ "smallvec",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -153,6 +164,15 @@ name = "cc"
 version = "1.0.79"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "50d30906286121d95be3d479533b458f87493b30a4b5f79a607db8f5d11aa91f"
+
+[[package]]
+name = "cc-traits"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "becb23f44ae9dd141d637d520b908c291bf4c5eed016ca368daa1430d54ebf4c"
+dependencies = [
+ "slab",
+]
 
 [[package]]
 name = "cfg-if"
@@ -239,6 +259,7 @@ dependencies = [
 name = "exchange-data"
 version = "0.1.0"
 dependencies = [
+ "btree-slab",
  "futures-channel",
  "futures-util",
  "reqwest",

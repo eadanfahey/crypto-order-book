@@ -1,7 +1,7 @@
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Deserializer};
 use std::str::from_utf8;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio::{
     select,
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
@@ -23,6 +23,7 @@ fn create_stream_url(endpoint: &str) -> Url {
     return Url::parse(&(BASE_STREAM_ENDPOINT.to_owned() + endpoint)).unwrap();
 }
 
+#[derive(Clone, Copy)]
 pub enum Symbol {
     BtcUsdt,
 }
@@ -45,12 +46,24 @@ impl Symbol {
         }
     }
 
+    pub fn to_string(&self) -> &'static str {
+        match self {
+            Self::BtcUsdt => "BTCUSDT",
+        }
+    }
+
     fn scales(&self) -> SymbolScales {
         match self {
             Self::BtcUsdt => SymbolScales {
                 price: 2,
                 quantity: 8,
             },
+        }
+    }
+
+    pub fn id(&self) -> u32 {
+        match self {
+            Self::BtcUsdt => 1,
         }
     }
 }
@@ -138,7 +151,7 @@ pub struct OrderBookDiff {
 /// to be notified when it should close the stream.
 pub async fn start_stream_order_book_diffs(
     symbol: Symbol,
-    channel: UnboundedSender<(OrderBookDiff, Duration)>,
+    channel: UnboundedSender<(OrderBookDiff, Instant)>,
     mut shutdown_recv: UnboundedReceiver<()>,
 ) -> JoinHandle<Result<(), Error>> {
     let url = create_stream_url(&format!("/{}@depth@100ms", symbol.stream_string()));
@@ -162,7 +175,7 @@ pub async fn start_stream_order_book_diffs(
                         ws_sender.send(pong.clone()).await.map_err(Error::StreamError)?;
                         continue;
                     }
-                    if msg.is_ping() {
+                    if msg.is_pong() {
                         continue;
                     }
                     if msg.is_close() {
@@ -171,7 +184,7 @@ pub async fn start_stream_order_book_diffs(
                     let start = Instant::now();
                     let data = msg.into_data();
                     let diff = parse_diff_depth_stream_event(&data, &scales)?;
-                    channel.send((diff, start.elapsed())).unwrap();
+                    channel.send((diff, start)).unwrap();
                 }
                 else => {
                     return Ok(());
