@@ -1,12 +1,12 @@
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::str::from_utf8;
 use std::time::Instant;
 use tokio::{select, sync::broadcast, sync::mpsc::UnboundedSender, task::JoinHandle};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use url::Url;
 
-use crate::errors::Error;
+use crate::{errors::Error, msgpack_lines};
 
 const BASE_API_ENDPOINT: &'static str = "https://api.binance.com/api/v3";
 const BASE_STREAM_ENDPOINT: &'static str = "wss://stream.binance.com:9443/ws";
@@ -256,7 +256,6 @@ pub struct OrderBookDiff {
 pub async fn start_stream_order_book_diffs(
     symbol: Symbol,
     channel: UnboundedSender<(OrderBookDiff, Instant)>,
-    // mut shutdown_recv: UnboundedReceiver<()>,
     mut shutdown_recv: broadcast::Receiver<()>,
 ) -> JoinHandle<Result<(), Error>> {
     let url = create_stream_url(&format!("/{}@depth@100ms", symbol.stream_string()));
@@ -290,6 +289,52 @@ pub async fn start_stream_order_book_diffs(
                     let data = msg.into_data();
                     let diff = parse_diff_depth_stream_event(&data, &scales)?;
                     channel.send((diff, start)).unwrap();
+                }
+                else => {
+                    return Ok(());
+                },
+            }
+        }
+    });
+
+    handle
+}
+
+pub async fn start_stream_trades(
+    symbol: Symbol,
+    channel: UnboundedSender<Trade>,
+    mut shutdown_recv: broadcast::Receiver<()>,
+) -> JoinHandle<Result<(), Error>> {
+    let url = create_stream_url(&format!("/{}@trade", symbol.stream_string()));
+
+    let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
+
+    let (mut ws_sender, mut ws_receiver) = ws_stream.split();
+    let scales = symbol.scales();
+    let pong = Message::Pong("pong".as_bytes().to_vec());
+
+    let handle = tokio::spawn(async move {
+        loop {
+            select! {
+                _ = shutdown_recv.recv() => {
+                    ws_sender.send(Message::Close(None)).await.map_err(Error::StreamError)?;
+                    return Ok(());
+                },
+                Some(msg) = ws_receiver.next() => {
+                    let msg = msg.unwrap();
+                    if msg.is_ping() {
+                        ws_sender.send(pong.clone()).await.map_err(Error::StreamError)?;
+                        continue;
+                    }
+                    if msg.is_pong() {
+                        continue;
+                    }
+                    if msg.is_close() {
+                        return Ok(());
+                    }
+                    let data = msg.into_data();
+                    let trade = parse_trade(&data, &scales)?;
+                    channel.send(trade).unwrap();
                 }
                 else => {
                     return Ok(());
@@ -341,8 +386,53 @@ impl<'a> ByteSliceIterator<'a> {
         return Err(Error::ParseError(msg));
     }
 
+    fn expect_bytes(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        if self.pos + bytes.len() >= self.data.len() {
+            let msg = "unexpected  EOF".to_owned();
+            return Err(Error::ParseError(msg));
+        }
+        for (i, &b) in bytes.iter().enumerate() {
+            let test = self.data[self.pos + i];
+            if b != test {
+                let msg = format!(
+                    "expected char '{}' at position {} but found '{}'",
+                    b as char,
+                    self.pos + i,
+                    test as char
+                );
+                return Err(Error::ParseError(msg));
+            }
+        }
+        self.pos += bytes.len();
+        Ok(())
+    }
+
     fn peek_byte(&mut self) -> u8 {
         return self.data[self.pos];
+    }
+
+    fn consume_string(&mut self) -> Result<&[u8], Error> {
+        self.expect_byte(b'"')?;
+        let s = self.consume_until_byte(b'"');
+        self.expect_byte(b'"')?;
+        Ok(s)
+    }
+
+    fn consume_int(&mut self) -> Result<u64, Error> {
+        let pos = self.pos;
+        let s = self.consume_until_filter(|b| b.is_ascii_digit());
+        parse_int(s).map_err(|e| Error::ParseError(format!("position {}: {}", pos, e)))
+    }
+
+    fn consume_bool(&mut self) -> Result<bool, Error> {
+        if self.peek_byte() == b't' {
+            self.expect_bytes(&[b't', b'r', b'u', b'e'])?;
+            return Ok(true);
+        } else if self.peek_byte() == b'f' {
+            self.expect_bytes(&[b'f', b'a', b'l', b's', b'e'])?;
+            return Ok(false);
+        }
+        Ok(true)
     }
 
     fn consume_until_byte(&mut self, byte: u8) -> &'a [u8] {
@@ -363,6 +453,15 @@ impl<'a> ByteSliceIterator<'a> {
         self.pos += len;
         return slice;
     }
+}
+
+fn parse_int(s: &[u8]) -> Result<u64, Error> {
+    from_utf8(s)
+        .map_err(|_| Error::ParseError("could not read utf8".to_owned()))
+        .and_then(|s| {
+            s.parse::<u64>()
+                .map_err(|_| Error::ParseError("could not parse integer".to_owned()))
+        })
 }
 
 /// Parses a decimal number represented as a string to a scaled `u64`.
@@ -456,7 +555,7 @@ fn parse_single_byte_object_key(bytes: &mut ByteSliceIterator, key: u8) -> Resul
 }
 
 /// Handcoded parser for the Binance order book diff stream messages.
-/// See: https://binance-docs.github.io/apidocs/spot/en/#partial-book-depth-streams
+/// See: https://binance-docs.github.io/apidocs/spot/en/#diff-depth-stream
 fn parse_diff_depth_stream_event(
     data: &[u8],
     scales: &SymbolScales,
@@ -600,11 +699,107 @@ fn parse_order_book(data: &[u8], scales: &SymbolScales) -> Result<OrderBook, Err
     })
 }
 
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
+pub struct Trade {
+    pub event_time: u64,
+    pub trade_id: u64,
+    pub price: u64,
+    pub quantity: u64,
+    pub buyer_order_id: u64,
+    pub seller_order_id: u64,
+    pub trade_time: u64,
+    pub is_market_maker: bool,
+}
+
+fn parse_trade(data: &[u8], scales: &SymbolScales) -> Result<Trade, Error> {
+    let mut bytes = ByteSliceIterator::new(data);
+
+    // Opening curly brace
+    bytes.expect_byte(b'{')?;
+
+    // Event type (ignore)
+    parse_single_byte_object_key(&mut bytes, b'e')?;
+    bytes.consume_string()?;
+    bytes.expect_byte(b',')?;
+
+    // Event time
+    parse_single_byte_object_key(&mut bytes, b'E')?;
+    let event_time = bytes.consume_int()?;
+    bytes.expect_byte(b',')?;
+
+    // Symbol (ignore)
+    parse_single_byte_object_key(&mut bytes, b's')?;
+    bytes.consume_string()?;
+    bytes.expect_byte(b',')?;
+
+    // Trade ID
+    parse_single_byte_object_key(&mut bytes, b't')?;
+    let trade_id = bytes.consume_int()?;
+    bytes.expect_byte(b',')?;
+
+    // Price
+    parse_single_byte_object_key(&mut bytes, b'p')?;
+    let price_s = bytes.consume_string()?;
+    let price = parse_scaled_number(from_utf8(price_s).unwrap(), scales.price);
+    bytes.expect_byte(b',')?;
+
+    // Quantity
+    parse_single_byte_object_key(&mut bytes, b'q')?;
+    let quantity_s = bytes.consume_string()?;
+    let quantity = parse_scaled_number(from_utf8(quantity_s).unwrap(), scales.quantity);
+    bytes.expect_byte(b',')?;
+
+    // Buyer order ID
+    parse_single_byte_object_key(&mut bytes, b'b')?;
+    let buyer_order_id = bytes.consume_int()?;
+    bytes.expect_byte(b',')?;
+
+    // Seller order ID
+    parse_single_byte_object_key(&mut bytes, b'a')?;
+    let seller_order_id = bytes.consume_int()?;
+    bytes.expect_byte(b',')?;
+
+    // Trade time
+    parse_single_byte_object_key(&mut bytes, b'T')?;
+    let trade_time = bytes.consume_int()?;
+    bytes.expect_byte(b',')?;
+
+    // Buyer is market maker
+    parse_single_byte_object_key(&mut bytes, b'm')?;
+    let is_market_maker = bytes.consume_bool()?;
+    bytes.expect_byte(b',')?;
+
+    // Ignore field 'M'
+    parse_single_byte_object_key(&mut bytes, b'M')?;
+    bytes.consume_bool()?;
+
+    // Closing curly brace
+    bytes.expect_byte(b'}')?;
+
+    if !bytes.is_empty() {
+        return Err(Error::ParseError("expected EOF".to_string()));
+    }
+
+    Ok(Trade {
+        event_time,
+        trade_id,
+        price,
+        quantity,
+        buyer_order_id,
+        seller_order_id,
+        trade_time,
+        is_market_maker,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use crate::binance_api::{parse_scaled_number, SymbolScales};
 
-    use super::{parse_diff_depth_stream_event, parse_order_book, OrderBookDiff, PriceLevel};
+    use super::{
+        parse_diff_depth_stream_event, parse_order_book, parse_trade, OrderBookDiff, PriceLevel,
+        Trade,
+    };
 
     #[test]
     fn test_parser() {
@@ -724,6 +919,27 @@ mod tests {
             quantity: 8,
         };
         parse_order_book(data.as_bytes(), &scales).unwrap();
+    }
+
+    #[test]
+    fn test_parse_trade() {
+        let data = r#"{"e":"trade","E":1679692817479,"s":"BTCUSDT","t":3056147717,"p":"27374.67000000","q":"0.00300000","b":20586159835,"a":20586159831,"T":1679692817479,"m":false,"M":true}"#;
+        let scales = SymbolScales {
+            price: 2,
+            quantity: 8,
+        };
+        let trade = parse_trade(data.as_bytes(), &scales).unwrap();
+        let expected_trade = Trade {
+            event_time: 1679692817479,
+            trade_id: 3056147717,
+            price: 2737467,
+            quantity: 300000,
+            buyer_order_id: 20586159835,
+            seller_order_id: 20586159831,
+            trade_time: 1679692817479,
+            is_market_maker: false,
+        };
+        assert_eq!(trade, expected_trade);
     }
 
     #[test]
