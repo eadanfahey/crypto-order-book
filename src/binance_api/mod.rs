@@ -6,7 +6,7 @@ use tokio::{select, sync::broadcast, sync::mpsc::UnboundedSender, task::JoinHand
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use url::Url;
 
-use crate::{errors::Error, msgpack_lines};
+use crate::errors::Error;
 
 const BASE_API_ENDPOINT: &'static str = "https://api.binance.com/api/v3";
 const BASE_STREAM_ENDPOINT: &'static str = "wss://stream.binance.com:9443/ws";
