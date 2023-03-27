@@ -1,0 +1,69 @@
+{
+    "fields": [
+      {
+        "name": "event_time",
+        "data_type": "UInt64",
+        "nullable": false,
+        "dict_id": 0,
+        "dict_is_ordered": false,
+        "metadata": {}
+      },
+      {
+        "name": "trade_id",
+        "data_type": "UInt64",
+        "nullable": false,
+        "dict_id": 0,
+        "dict_is_ordered": false,
+        "metadata": {}
+      },
+      {
+        "name": "price",
+        "data_type": "UInt64",
+        "nullable": false,
+        "dict_id": 0,
+        "dict_is_ordered": false,
+        "metadata": {}
+      },
+      {
+        "name": "quantity",
+        "data_type": "UInt64",
+        "nullable": false,
+        "dict_id": 0,
+        "dict_is_ordered": false,
+        "metadata": {}
+      },
+      {
+        "name": "buyer_order_id",
+        "data_type": "UInt64",
+        "nullable": false,
+        "dict_id": 0,
+        "dict_is_ordered": false,
+        "metadata": {}
+      },
+      {
+        "name": "seller_order_id",
+        "data_type": "UInt64",
+        "nullable": false,
+        "dict_id": 0,
+        "dict_is_ordered": false,
+        "metadata": {}
+      },
+      {
+        "name": "trade_time",
+        "data_type": "UInt64",
+        "nullable": false,
+        "dict_id": 0,
+        "dict_is_ordered": false,
+        "metadata": {}
+      },
+      {
+        "name": "is_market_maker",
+        "data_type": "Boolean",
+        "nullable": false,
+        "dict_id": 0,
+        "dict_is_ordered": false,
+        "metadata": {}
+      }
+    ],
+    "metadata": {}
+  }

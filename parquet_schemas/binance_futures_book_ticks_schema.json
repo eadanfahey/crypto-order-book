@@ -1,0 +1,61 @@
+{
+  "fields": [
+    {
+      "name": "order_book_update_id",
+      "data_type": "UInt64",
+      "nullable": false,
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {}
+    },
+    {
+      "name": "event_time",
+      "data_type": "UInt64",
+      "nullable": false,
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {}
+    },
+    {
+      "name": "transaction_time",
+      "data_type": "UInt64",
+      "nullable": false,
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {}
+    },
+    {
+      "name": "best_bid_price",
+      "data_type": "UInt64",
+      "nullable": false,
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {}
+    },
+    {
+      "name": "best_bid_quantity",
+      "data_type": "UInt64",
+      "nullable": false,
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {}
+    },
+    {
+      "name": "best_ask_price",
+      "data_type": "UInt64",
+      "nullable": false,
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {}
+    },
+    {
+      "name": "best_ask_quantity",
+      "data_type": "UInt64",
+      "nullable": false,
+      "dict_id": 0,
+      "dict_is_ordered": false,
+      "metadata": {}
+    }
+  ],
+  "metadata": {}
+}
